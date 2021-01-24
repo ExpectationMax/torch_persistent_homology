@@ -57,8 +57,7 @@ torch::Tensor compute_persistence_homology(torch::Tensor filtered_v,
   auto n_edges = filtered_e.size(0);
   auto parents = torch::arange(0, n_vertices);
   auto parents_data = parents.accessor<int64_t, 1>();
-  auto persistence =
-      torch::zeros(at::IntArrayRef({n_vertices, 2}), filtered_v.options());
+  auto persistence = torch::zeros({n_vertices, 2}, filtered_v.options());
   auto persistence1 = torch::zeros({n_edges, 2}, filtered_e.options());
 
   // Looks like the more eligant alternative is C++17 thus we will have to live
@@ -69,14 +68,14 @@ torch::Tensor compute_persistence_homology(torch::Tensor filtered_v,
   sorted_indices = std::get<1>(sorted_out);
 
   persistence.index_put_({Ellipsis, 0}, filtered_v);
-  std::cout << "persistence:" << persistence << std::endl;
+  // std::cout << "persistence:" << persistence << std::endl;
   auto unpaired_value = filtered_e.index({-1});
 
   for (auto i = 0; i < n_edges; i++) {
     auto cur_edge_index = sorted_indices[i].item<int64_t>();
     auto cur_edge_weight = filtered_e_sorted[i].item<float>();
     auto nodes = edge_index.index({Ellipsis, cur_edge_index});
-    std::cout << "nodes:" << nodes << std::endl;
+    // std::cout << "nodes:" << nodes << std::endl;
 
     auto node1 = nodes[0].item<int64_t>();
     auto node2 = nodes[1].item<int64_t>();
@@ -110,11 +109,81 @@ torch::Tensor compute_persistence_homology(torch::Tensor filtered_v,
   return persistence;
 }
 
+torch::Tensor compute_persistence_homology_batched(torch::Tensor filtered_v,
+                                                   torch::Tensor filtered_e,
+                                                   torch::Tensor edge_index,
+                                                   torch::Tensor vertex_slices,
+                                                   torch::Tensor edge_slices) {
+
+  auto batch_size = vertex_slices.size(0) - 1;
+  auto n_nodes = filtered_v.size(0);
+  auto n_edges = filtered_e.size(0);
+  auto n_filtrations = filtered_v.size(1);
+
+  auto parents = torch::arange(0, n_nodes, edge_index.options())
+                     .unsqueeze(0)
+                     .repeat({n_filtrations, 1});
+  auto persistence =
+      torch::zeros({n_filtrations, n_nodes, 2}, filtered_v.options());
+  auto persistence1 = torch::zeros({n_edges, n_nodes, 2}, filtered_v.options());
+  auto vertex_slices_data = vertex_slices.accessor<int64_t, 1>();
+  auto edge_slices_data = edge_slices.accessor<int64_t, 1>();
+  for (auto i = 0; i < batch_size * n_filtrations; i++) {
+    auto instance = i / n_filtrations;
+    auto filtration = i % n_filtrations;
+    auto cur_vertices = filtered_v.index(
+        {Slice(vertex_slices_data[instance], vertex_slices_data[instance + 1]),
+         filtration});
+    auto cur_edges = filtered_e.index(
+        {Slice(edge_slices_data[instance], edge_slices_data[instance + 1]),
+         filtration});
+    auto vertex_offset = vertex_slices_data[instance];
+    auto cur_edge_indices =
+        edge_index.index({Ellipsis, Slice(edge_slices_data[instance],
+                                          edge_slices_data[instance + 1])}) -
+        vertex_offset;
+    auto cur_res =
+        compute_persistence_homology(cur_vertices, cur_edges, cur_edge_indices);
+    persistence.index_put_(
+        {filtration,
+         Slice(vertex_slices_data[instance], vertex_slices_data[instance + 1])},
+        cur_res);
+  }
+  // Below code does not work due to usage of at:Tensors in threads. Need to
+  // rewrite inner part of loop to not use at:Tensor but only raw memory access.
+  // at::parallel_for(
+  //     0, batch_size * n_filtrations, 0, [&](int64_t begin, int64_t end) {
+  //       for (auto i = begin; i < end; i++) {
+  //         auto instance = i / n_filtrations;
+  //         auto filtration = i % n_filtrations;
+  //         auto cur_vertices = filtered_v.index({Slice(
+  //             vertex_slices_data[instance], vertex_slices_data[instance +
+  //             1])});
+  //         auto vertex_offset = vertex_slices_data[instance];
+  //         auto cur_edges = filtered_e.index({Slice(
+  //             edge_slices_data[instance], edge_slices_data[instance +
+  //             1])});
+  //         auto cur_edge_indices =
+  //             edge_index.index(
+  //                 {Ellipsis, Slice(edge_slices_data[instance],
+  //                                  edge_slices_data[instance + 1])}) -
+  //             vertex_offset;
+  //         persistence.index_put_(
+  //             {filtration}, compute_persistence_homology(
+  //                               cur_vertices, cur_edges,
+  //                               cur_edge_indices));
+  //       }
+  //     });
+  return persistence;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("set_to_one", &set_to_one_tensor, "Test inplace parallel set to one");
   m.def("ones_tensor", &ones_tensor, "Test parallel set to one");
   m.def("uf_find", &uf_find, "UnionFind find operation");
   m.def("uf_merge", &uf_merge, "UnionFind merge operation");
-  m.def("persistence_routine", &compute_persistence_homology,
+  m.def("compute_persistence_homology", &compute_persistence_homology,
         "Persistence routine");
+  m.def("compute_persistence_homology_batched",
+        &compute_persistence_homology_batched, "Persistence routine");
 }

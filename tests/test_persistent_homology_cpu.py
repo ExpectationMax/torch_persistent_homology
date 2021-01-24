@@ -101,9 +101,28 @@ def test_persistence_computation():
         (filtered_v[edge_index[0]], filtered_v[edge_index[1]])),
         axis=0)
     impl1 = persistence_routine(filtered_v, edge_index)
-    impl2 = persistent_homology_cpu.persistence_routine(
+    impl2 = persistent_homology_cpu.compute_persistence_homology(
         filtered_v, filtered_e, edge_index)
 
     print(impl1)
     print(impl2)
     assert (impl1 == impl2).all()
+
+
+def test_persistence_computation_batched():
+    edge_index = torch.Tensor([[0, 0, 2, 3, 4], [2, 3, 3, 4, 1]]).long()
+    edge_index = torch.cat([edge_index, edge_index + 5], 1)
+    filtered_v = torch.Tensor([1., 1., 2., 3., 4.]).repeat(2).unsqueeze(1)
+    filtered_e = torch.max(torch.stack(
+        (filtered_v[edge_index[0]], filtered_v[edge_index[1]])),
+        axis=0)[0].repeat(2, 1)
+    print(filtered_e)
+    vertex_slices = torch.Tensor([0, 5, 10]).long()
+    edge_slices = torch.Tensor([0, 5, 10]).long()
+    # impl1 = persistence_routine(filtered_v, edge_index)
+    impl2 = persistent_homology_cpu.compute_persistence_homology_batched(
+        filtered_v, filtered_e, edge_index, vertex_slices, edge_slices)
+
+    # print(impl1)
+    print(impl2)
+    # assert (impl1 == impl2).all()
