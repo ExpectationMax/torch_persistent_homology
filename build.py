@@ -11,8 +11,8 @@ def build(setup_kwargs):
     setup_kwargs.update({
         'ext_modules': [
             cpp_extension.CppExtension(
-                'torch_persistent_homology.unionfind',
-                ['torch_persistent_homology/unionfind.cpp'],
+                'torch_persistent_homology.persistent_homology_cpu',
+                ['torch_persistent_homology/perisistent_homology_cpu.cpp'],
                 extra_link_args=[
                     '-Wl,-rpath,' + library_path
                     for library_path in torch_library_paths]
