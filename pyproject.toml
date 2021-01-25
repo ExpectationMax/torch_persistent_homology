@@ -11,6 +11,7 @@ torch = "^1.7.1"
 
 [tool.poetry.dev-dependencies]
 pytest = "^6.2.1"
+pyper = {git = "git@github.com:Pseudomanifold/pyper.git"}
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
