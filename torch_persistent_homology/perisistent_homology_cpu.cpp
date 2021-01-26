@@ -303,7 +303,8 @@ compute_persistence_homology_batched_mt(torch::Tensor filtered_v,
                                         torch::Tensor filtered_e,
                                         torch::Tensor edge_index,
                                         torch::Tensor vertex_slices,
-                                        torch::Tensor edge_slices) {
+                                        torch::Tensor edge_slices,
+                                        bool set_invalid_to_nan = false) {
   // Changed index orders are required in order to allow slicing into
   // contingous memory regions Assumes shapes: filtered_v: [n_filtrations,
   // n_nodes] filtered_e: [n_filtrations, n_edges, 2] edge_index: [n_edges,
@@ -329,7 +330,6 @@ compute_persistence_homology_batched_mt(torch::Tensor filtered_v,
   // Output
   auto pers_ind = torch::full({n_filtrations, n_nodes, 2}, -1, integer_no_grad);
   // Already set the first part of the tuple
-  pers_ind.index_put_({"...", 0}, filtered_v);
   pers_ind.index_put_({"...", 0}, torch::arange(0, n_nodes, integer_no_grad));
   auto pers1_ind =
       torch::full({n_filtrations, n_edges, 2}, -1, integer_no_grad);
@@ -358,10 +358,15 @@ compute_persistence_homology_batched_mt(torch::Tensor filtered_v,
   auto pers = filtered_v.index(
       {torch::arange(n_filtrations, integer_no_grad).unsqueeze(1), pers_ind});
   // Add fake value to filtered
+  float_t invalid_fill_value;
+  if (set_invalid_to_nan)
+    invalid_fill_value = std::numeric_limits<float_t>::quiet_NaN();
+  else
+    invalid_fill_value = 0;
+
   auto pers1 =
-      torch::cat({filtered_v,
-                  torch::full({1, 1}, std::numeric_limits<float_t>::quiet_NaN(),
-                              filtered_v.options())},
+      torch::cat({filtered_v, torch::full({1, 1}, invalid_fill_value,
+                                          filtered_v.options())},
                  1)
           .index({torch::arange(n_filtrations, integer_no_grad).unsqueeze(1),
                   pers1_ind});
