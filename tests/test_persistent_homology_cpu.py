@@ -126,7 +126,8 @@ def test_persistence_computation_batched():
 def test_persistence_computation_batched_mt():
     edge_index = torch.Tensor([[0, 0, 2, 3, 4], [2, 3, 3, 4, 1]]).long()
     edge_index = torch.cat([edge_index, edge_index + 5], 1)
-    filtered_v = torch.Tensor([5., 1., 2., 2., 4.]).repeat(2).unsqueeze(1)
+    filtered_v = torch.Tensor(
+        [[1., 1., 2., 3., 4.], [5., 1., 2., 2., 4.]]).transpose(0, 1).repeat(2, 1)
     filtered_e = torch.max(torch.stack(
         (filtered_v[edge_index[0]], filtered_v[edge_index[1]])),
         axis=0)[0]
@@ -135,9 +136,9 @@ def test_persistence_computation_batched_mt():
     impl_st = persistent_homology_cpu.compute_persistence_homology_batched(
         filtered_v, filtered_e, edge_index, vertex_slices, edge_slices)
 
-    filtered_v = filtered_v.transpose(1, 0).contiguous()
-    filtered_e = filtered_e.transpose(1, 0).contiguous()
-    edge_index = edge_index.transpose(1, 0).contiguous()
+    filtered_v = filtered_v.transpose(1, 0)
+    filtered_e = filtered_e.transpose(1, 0)
+    edge_index = edge_index.transpose(1, 0)
     impl_mt = persistent_homology_cpu.compute_persistence_homology_batched_mt(
         filtered_v, filtered_e, edge_index, vertex_slices, edge_slices)
     assert (impl_st[0] == impl_mt[0]).all()

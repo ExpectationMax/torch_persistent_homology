@@ -319,25 +319,23 @@ compute_persistence_homology_batched_mt(torch::Tensor filtered_v,
   integer_no_grad = integer_no_grad.device(edge_index.options().device());
   integer_no_grad = integer_no_grad.dtype(edge_index.options().dtype());
 
-  // Datastrcuture for UnionFind
-  // operations
+  // Output indicators
+  auto pers_ind = torch::full({n_filtrations, n_nodes, 2}, -1, integer_no_grad);
+  // Already set the first part of the tuple
+  pers_ind.index_put_({"...", 0}, torch::arange(0, n_nodes, integer_no_grad));
+  auto pers1_ind =
+      torch::full({n_filtrations, n_edges, 2}, -1, integer_no_grad);
+
+  // Datastructure for UnionFind and sorting operations
   auto parents = torch::arange(0, n_nodes, integer_no_grad)
                      .unsqueeze(0)
                      .repeat({n_filtrations, 1});
-  // Space for sorting of edge indices
   auto sorting_space = torch::arange(0, n_edges, integer_no_grad)
                            .unsqueeze(0)
                            .repeat({n_filtrations, 1})
                            .contiguous();
-  // Output
-  auto pers_ind = torch::full({n_filtrations, n_nodes, 2}, -1, integer_no_grad);
-  // Already set the first part of the
-  // tuple
-  pers_ind.index_put_({"...", 0}, torch::arange(0, n_nodes, integer_no_grad));
-  auto pers1_ind =
-      torch::full({n_filtrations, n_edges, 2}, -1, integer_no_grad);
-  // Double dispatch over int and float
-  // types
+
+  // Double dispatch over int and float types
   AT_DISPATCH_FLOATING_TYPES(
       filtered_v.scalar_type(), "compute_persistence_batched_mt1", ([&] {
         using float_t = scalar_t;
@@ -362,8 +360,13 @@ compute_persistence_homology_batched_mt(torch::Tensor filtered_v,
 
   // Construct tensors with values from the indicators in order to retain
   // gradient information
-  auto pers = filtered_v.index(
-      {torch::arange(n_filtrations, integer_no_grad).unsqueeze(1), pers_ind});
+
+  // Gather the filtration values according to the indices definde in pers_ind.
+  auto pers =
+      filtered_v
+          .index({torch::arange(0, n_filtrations, integer_no_grad).unsqueeze(1),
+                  pers_ind.view({n_filtrations, -1})})
+          .view({n_filtrations, n_nodes, 2});
   // Add fake value to filtered
   float_t invalid_fill_value;
   if (set_invalid_to_nan)
@@ -371,12 +374,18 @@ compute_persistence_homology_batched_mt(torch::Tensor filtered_v,
   else
     invalid_fill_value = 0;
 
+  // Gather filtration values according to the indices defined in pers_ind1.
+  // Here we append a "fake value" to the filtration tensor. This value is
+  // collected if no cycles were registered for the edge as the default value is
+  // -1, i.e. the last element of the tensor.
   auto pers1 =
-      torch::cat({filtered_v, torch::full({1, 1}, invalid_fill_value,
-                                          filtered_v.options())},
-                 1)
+      torch::cat(
+          {filtered_v, torch::full({n_filtrations, 1}, invalid_fill_value,
+                                   filtered_v.options())},
+          1)
           .index({torch::arange(n_filtrations, integer_no_grad).unsqueeze(1),
-                  pers1_ind});
+                  pers1_ind.view({n_filtrations, -1})})
+          .view({n_filtrations, n_edges, 2});
   return std::make_tuple(std::move(pers), std::move(pers1));
 }
 
