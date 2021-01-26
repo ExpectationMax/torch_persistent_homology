@@ -382,14 +382,18 @@ compute_persistence_homology_batched_mt(torch::Tensor filtered_v,
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("set_to_one", &set_to_one_tensor, "Test inplace parallel set to one");
-  m.def("ones_tensor", &ones_tensor, "Test parallel set to one");
-  m.def("uf_find", &uf_find, "UnionFind find operation");
+  m.def("ones_tensor", &ones_tensor, py::call_guard<py::gil_scoped_release>(),
+        "Test parallel set to one");
+  m.def("uf_find", &uf_find, py::call_guard<py::gil_scoped_release>(),
+        "UnionFind find operation");
   m.def("uf_merge", &uf_merge, "UnionFind merge operation");
   m.def("compute_persistence_homology", &compute_persistence_homology,
-        "Persistence routine");
+        py::call_guard<py::gil_scoped_release>(), "Persistence routine");
   m.def("compute_persistence_homology_batched",
-        &compute_persistence_homology_batched, "Persistence routine");
+        &compute_persistence_homology_batched,
+        py::call_guard<py::gil_scoped_release>(), "Persistence routine");
   m.def("compute_persistence_homology_batched_mt",
         &compute_persistence_homology_batched_mt,
+        py::call_guard<py::gil_scoped_release>(),
         "Persistence routine multi threading");
 }
