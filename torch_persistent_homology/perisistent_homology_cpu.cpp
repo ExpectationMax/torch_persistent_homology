@@ -174,7 +174,24 @@ std::tuple<torch::Tensor, torch::Tensor> compute_persistence_homology_batched(
   return std::make_tuple(persistence, persistence1);
 }
 
-template <typename int_t, typename float_t>
+/* We might need this later for a cuda implementation...
+
+template <class BiDirIt, class Compare = std::less<>>
+void inplace_merge_sort(BiDirIt first, BiDirIt last, Compare cmp = Compare{}) {
+  auto const N = std::distance(first, last);
+  if (N <= 1)
+    return;
+  auto const middle = std::next(first, N / 2);
+  inplace_merge_sort(first, middle,
+                     cmp); // assert(std::is_sorted(first, middle, cmp));
+  inplace_merge_sort(middle, last,
+                     cmp); // assert(std::is_sorted(middle, last, cmp));
+  std::inplace_merge(first, middle, last,
+                     cmp); // assert(std::is_sorted(first, last, cmp));
+}
+*/
+
+template <typename float_t, typename int_t>
 void compute_persistence_homology_raw(
     torch::TensorAccessor<float_t, 1> filtered_v,
     torch::TensorAccessor<float_t, 1> filtered_e,
@@ -198,16 +215,30 @@ void compute_persistence_homology_raw(
   });
 
   auto unpaired_index = *(sorting_end - 1);
+  int_t unpaired_vertex_index;
+  // TODO: This has assumptions on the edge filtration selected
+  if (filtered_v[edge_index[unpaired_index][0]] <
+      filtered_v[edge_index[unpaired_index][1]])
+    unpaired_vertex_index = edge_index[unpaired_index][1];
+  else
+    unpaired_vertex_index = edge_index[unpaired_index][0];
+
   for (auto i = 0; i < n_edges; i++) {
     auto cur_edge_index = sorting_space[edge_begin + i];
     auto node1 = edge_index[cur_edge_index][0];
     auto node2 = edge_index[cur_edge_index][1];
+    // TODO: This has some assumptions on the edge filtration
+    int_t cur_vertex_index;
+    if (filtered_v[node1] < filtered_v[node2])
+      cur_vertex_index = node2;
+    else
+      cur_vertex_index = node1;
     auto younger = UnionFind<int_t>::find(parents, node1);
     auto older = UnionFind<int_t>::find(parents, node2);
 
     if (younger == older) {
-      pers1_indices[cur_edge_index][0] = cur_edge_index;
-      pers1_indices[cur_edge_index][1] = unpaired_index;
+      pers1_indices[cur_edge_index][0] = cur_vertex_index;
+      pers1_indices[cur_edge_index][1] = unpaired_vertex_index;
       continue;
     } else {
       if (filtered_v[younger] < filtered_v[older]) {
@@ -220,19 +251,20 @@ void compute_persistence_homology_raw(
         node2 = tmp;
       }
     }
-    pers_indices[younger][1] = cur_edge_index;
+    pers_indices[younger][1] = cur_vertex_index;
     UnionFind<int_t>::merge(parents, node1, node2);
   }
-  // Handle roots, would make sense to do this outside as it can be parallelized
-  // quite esily using torch operations.  Yet this would require having access
-  // to the graph wise unpaired value, which we usually dont have.
+  // Handle roots, would make sense to do this outside as it can be
+  // parallelized quite esily using torch operations.  Yet this would
+  // require having access to the graph wise unpaired value, which we
+  // usually dont have.
   //
   for (auto i = 0; i < n_vertices; i++) {
     auto vertex_index = vertex_begin + i;
     auto parent_value = parents[vertex_index];
     if (vertex_index == parent_value) {
       pers_indices[vertex_index][0] = vertex_index;
-      pers_indices[vertex_index][1] = unpaired_index;
+      pers_indices[vertex_index][1] = unpaired_vertex_index;
     }
   }
 }
@@ -254,9 +286,9 @@ void compute_persistence_homology_ptrs(
   at::parallel_for(
       0, n_graphs * n_filtrations, 0, [&](int64_t begin, int64_t end) {
         for (auto i = begin; i < end; i++) {
-          auto instance = i % n_filtrations;
-          auto filtration = i / n_filtrations;
-          compute_persistence_homology_raw<int_t, float_t>(
+          auto instance = i / n_filtrations;
+          auto filtration = i % n_filtrations;
+          compute_persistence_homology_raw<float_t, int_t>(
               filtered_v[filtration], filtered_e[filtration], edge_index,
               parents[filtration], sorting_space[filtration],
               pers_ind[filtration], pers1_ind[filtration],
@@ -274,29 +306,33 @@ compute_persistence_homology_batched_mt(torch::Tensor filtered_v,
                                         torch::Tensor edge_slices) {
   // Changed index orders are required in order to allow slicing into
   // contingous memory regions Assumes shapes: filtered_v: [n_filtrations,
-  // n_nodes] filtered_e: [n_filtrations, n_edges, 2] edge_index: [n_edges, 2]
-  // vertex_slices: [n_graphs+1]
-  // edge_slices: [n_graphs+1]
+  // n_nodes] filtered_e: [n_filtrations, n_edges, 2] edge_index: [n_edges,
+  // 2] vertex_slices: [n_graphs+1] edge_slices: [n_graphs+1]
 
   auto n_nodes = filtered_v.size(1);
   auto n_edges = filtered_e.size(1);
   auto n_filtrations = filtered_v.size(0);
+  auto integer_no_grad = torch::TensorOptions();
+  integer_no_grad = integer_no_grad.requires_grad(false);
+  integer_no_grad = integer_no_grad.device(edge_index.options().device());
+  integer_no_grad = integer_no_grad.dtype(edge_index.options().dtype());
 
   // Datastrcuture for UnionFind operations
-  auto parents = torch::arange(0, n_nodes, edge_index.options())
+  auto parents = torch::arange(0, n_nodes, integer_no_grad)
                      .unsqueeze(0)
                      .repeat({n_filtrations, 1});
   // Space for sorting of edge indices
-  auto sorting_space = torch::arange(0, n_edges, edge_index.options())
+  auto sorting_space = torch::arange(0, n_edges, integer_no_grad)
                            .unsqueeze(0)
-                           .repeat({n_filtrations, 1});
+                           .repeat({n_filtrations, 1})
+                           .contiguous();
   // Output
-  auto pers_ind =
-      torch::full({n_filtrations, n_nodes, 2}, 0., edge_index.options());
+  auto pers_ind = torch::full({n_filtrations, n_nodes, 2}, -1, integer_no_grad);
   // Already set the first part of the tuple
   pers_ind.index_put_({"...", 0}, filtered_v);
+  pers_ind.index_put_({"...", 0}, torch::arange(0, n_nodes, integer_no_grad));
   auto pers1_ind =
-      torch::full({n_filtrations, n_edges, 2}, 0., edge_index.options());
+      torch::full({n_filtrations, n_edges, 2}, -1, integer_no_grad);
   // Double dispatch over int and float types
   AT_DISPATCH_FLOATING_TYPES(
       filtered_v.scalar_type(), "compute_persistence_batched_mt1", ([&] {
@@ -316,7 +352,20 @@ compute_persistence_homology_batched_mt(torch::Tensor filtered_v,
                   pers1_ind.accessor<int_t, 3>());
             }));
       }));
-  return std::make_tuple(pers_ind, pers1_ind);
+
+  // Construct tensors with values from the indicators in order to retain
+  // gradient information
+  auto pers = filtered_v.index(
+      {torch::arange(n_filtrations, integer_no_grad).unsqueeze(1), pers_ind});
+  // Add fake value to filtered
+  auto pers1 =
+      torch::cat({filtered_v,
+                  torch::full({1, 1}, std::numeric_limits<float_t>::quiet_NaN(),
+                              filtered_v.options())},
+                 1)
+          .index({torch::arange(n_filtrations, integer_no_grad).unsqueeze(1),
+                  pers1_ind});
+  return std::make_tuple(std::move(pers), std::move(pers1));
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
