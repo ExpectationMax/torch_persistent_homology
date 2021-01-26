@@ -303,12 +303,13 @@ compute_persistence_homology_batched_mt(torch::Tensor filtered_v,
                                         torch::Tensor filtered_e,
                                         torch::Tensor edge_index,
                                         torch::Tensor vertex_slices,
-                                        torch::Tensor edge_slices,
-                                        bool set_invalid_to_nan = false) {
+                                        torch::Tensor edge_slices) {
   // Changed index orders are required in order to allow slicing into
   // contingous memory regions Assumes shapes: filtered_v: [n_filtrations,
   // n_nodes] filtered_e: [n_filtrations, n_edges, 2] edge_index: [n_edges,
   // 2] vertex_slices: [n_graphs+1] edge_slices: [n_graphs+1]
+  bool set_invalid_to_nan = false; // This might be relevant in the future when
+                                   // we decide to handle cycles differently
 
   auto n_nodes = filtered_v.size(1);
   auto n_edges = filtered_e.size(1);
@@ -318,7 +319,8 @@ compute_persistence_homology_batched_mt(torch::Tensor filtered_v,
   integer_no_grad = integer_no_grad.device(edge_index.options().device());
   integer_no_grad = integer_no_grad.dtype(edge_index.options().dtype());
 
-  // Datastrcuture for UnionFind operations
+  // Datastrcuture for UnionFind
+  // operations
   auto parents = torch::arange(0, n_nodes, integer_no_grad)
                      .unsqueeze(0)
                      .repeat({n_filtrations, 1});
@@ -329,16 +331,21 @@ compute_persistence_homology_batched_mt(torch::Tensor filtered_v,
                            .contiguous();
   // Output
   auto pers_ind = torch::full({n_filtrations, n_nodes, 2}, -1, integer_no_grad);
-  // Already set the first part of the tuple
+  // Already set the first part of the
+  // tuple
   pers_ind.index_put_({"...", 0}, torch::arange(0, n_nodes, integer_no_grad));
   auto pers1_ind =
       torch::full({n_filtrations, n_edges, 2}, -1, integer_no_grad);
-  // Double dispatch over int and float types
+  // Double dispatch over int and float
+  // types
   AT_DISPATCH_FLOATING_TYPES(
       filtered_v.scalar_type(), "compute_persistence_batched_mt1", ([&] {
         using float_t = scalar_t;
         AT_DISPATCH_INTEGRAL_TYPES(
-            edge_index.scalar_type(), "compute_persistence_batched_mt2", ([&] {
+            edge_index.scalar_type(),
+            "compute_persistence_batched_"
+            "mt2",
+            ([&] {
               using int_t = scalar_t;
               compute_persistence_homology_ptrs<float_t, int_t>(
                   filtered_v.accessor<float_t, 2>(),
