@@ -102,7 +102,7 @@ def test_persistence_computation():
         axis=0)
     impl1 = persistence_routine(filtered_v, edge_index)
     impl2 = persistent_homology_cpu.compute_persistence_homology(
-        filtered_v, filtered_e, edge_index)
+        filtered_v, filtered_e, edge_index)[0]
 
     print(impl1)
     print(impl2)
