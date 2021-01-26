@@ -185,32 +185,32 @@ void compute_persistence_homology_raw(
     torch::TensorAccessor<int_t, 2> pers1_indices, int_t vertex_begin,
     int_t vertex_end, int_t edge_begin, int_t edge_end) {
 
-  /*
-  auto sorted_out = filtered_e.sort();
-  auto &&filtered_e_sorted = std::get<0>(sorted_out);
-  auto &&sorted_indices = std::get<1>(sorted_out);
+  auto n_vertices = vertex_end - vertex_begin;
+  auto n_edges = edge_end - edge_begin;
 
-  persistence.index_put_({Ellipsis, 0}, filtered_v);
-  // std::cout << "persistence:" << persistence << std::endl;
-  auto unpaired_value = filtered_e_sorted.index({-1});
+  // Argsort over constrained memory space
+  // Hacky pointer magic to allow constrained inplace sort.
+  // This assumes memory in contigous!!!
+  int_t *sorting_begin = sorting_space.data() + edge_begin;
+  int_t *sorting_end = sorting_space.data() + edge_end;
+  std::stable_sort(sorting_begin, sorting_end, [&filtered_e](int_t i, int_t j) {
+    return filtered_e[i] < filtered_e[j];
+  });
 
+  auto unpaired_index = *(sorting_end - 1);
   for (auto i = 0; i < n_edges; i++) {
-    auto cur_edge_index = sorted_indices[i].item<int64_t>();
-    auto cur_edge_weight = filtered_e_sorted[i].item<float>();
-    auto nodes = edge_index.index({Ellipsis, cur_edge_index});
-    // std::cout << "nodes:" << nodes << std::endl;
+    auto cur_edge_index = sorting_space[edge_begin + i];
+    auto node1 = edge_index[cur_edge_index][0];
+    auto node2 = edge_index[cur_edge_index][1];
+    auto younger = UnionFind<int_t>::find(parents, node1);
+    auto older = UnionFind<int_t>::find(parents, node2);
 
-    auto node1 = nodes[0].item<int64_t>();
-    auto node2 = nodes[1].item<int64_t>();
-
-    auto younger = UnionFind<int64_t>::find(parents_data, node1);
-    auto older = UnionFind<int64_t>::find(parents_data, node2);
     if (younger == older) {
-      persistence1.index_put_({cur_edge_index, 0}, cur_edge_weight);
-      persistence1.index_put_({cur_edge_index, 1}, unpaired_value);
+      pers1_indices[cur_edge_index][0] = cur_edge_index;
+      pers1_indices[cur_edge_index][1] = unpaired_index;
       continue;
     } else {
-      if (filtered_v[younger].item<float>() < filtered_v[older].item<float>()) {
+      if (filtered_v[younger] < filtered_v[older]) {
         // Flip older and younger, node1 and node 2
         auto tmp = younger;
         younger = older;
@@ -220,18 +220,21 @@ void compute_persistence_homology_raw(
         node2 = tmp;
       }
     }
-
-    persistence.index_put_({younger, 1}, cur_edge_weight);
-    UnionFind<int64_t>::merge(parents_data, node1, node2);
+    pers_indices[younger][1] = cur_edge_index;
+    UnionFind<int_t>::merge(parents, node1, node2);
   }
-  // Collect roots
-  auto is_root = parents == torch::arange(0, n_vertices, parents.options());
-  auto root_values = filtered_v.index({is_root});
-  persistence.index_put_({is_root, 0}, root_values);
-  persistence.index_put_({is_root, 1}, unpaired_value);
-  // persistence.index_put_({is_root, 1}, -1);
-  return std::make_tuple(std::move(persistence), std::move(persistence1));
-  */
+  // Handle roots, would make sense to do this outside as it can be parallelized
+  // quite esily using torch operations.  Yet this would require having access
+  // to the graph wise unpaired value, which we usually dont have.
+  //
+  for (auto i = 0; i < n_vertices; i++) {
+    auto vertex_index = vertex_begin + i;
+    auto parent_value = parents[vertex_index];
+    if (vertex_index == parent_value) {
+      pers_indices[vertex_index][0] = vertex_index;
+      pers_indices[vertex_index][1] = unpaired_index;
+    }
+  }
 }
 
 template <typename float_t, typename int_t>
@@ -269,12 +272,9 @@ compute_persistence_homology_batched_mt(torch::Tensor filtered_v,
                                         torch::Tensor edge_index,
                                         torch::Tensor vertex_slices,
                                         torch::Tensor edge_slices) {
-  // Changed index orders are required in order to allow slicing into contingous
-  // memory regions
-  // Assumes shapes:
-  // filtered_v: [n_filtrations, n_nodes]
-  // filtered_e: [n_filtrations, n_edges, 2]
-  // edge_index: [n_edges, 2]
+  // Changed index orders are required in order to allow slicing into
+  // contingous memory regions Assumes shapes: filtered_v: [n_filtrations,
+  // n_nodes] filtered_e: [n_filtrations, n_edges, 2] edge_index: [n_edges, 2]
   // vertex_slices: [n_graphs+1]
   // edge_slices: [n_graphs+1]
 
